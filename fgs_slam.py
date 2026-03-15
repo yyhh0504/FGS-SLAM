@@ -2,7 +2,7 @@
     solve selecting keyframe problem
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
 import torch.multiprocessing as mp
 import torch.multiprocessing

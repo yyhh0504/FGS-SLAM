@@ -10,7 +10,8 @@ import open3d as o3d
 import pygicp
 import time
 
-from open3d.cuda.pybind.core import float32
+# from open3d.cuda.pybind.core import float32
+from numpy import float32
 from scipy.spatial.transform import Rotation
 import rerun as rr
 
@@ -64,7 +65,7 @@ class Tracker(SLAMParameters):
         self.viewer_fps = slam.viewer_fps
         self.keyframe_freq = slam.keyframe_freq
         self.max_correspondence_distance = slam.max_correspondence_distance
-        self.reg = pygicp.FastGICP()
+        self.reg = None
 
         # Camera poses
         self.trajmanager = TrajManager(self.camera_parameters[8], self.dataset_path)
@@ -139,6 +140,7 @@ class Tracker(SLAMParameters):
 
         self.rgb_images, self.depth_images = self.get_images(f"{self.dataset_path}/images")
         self.num_images = len(self.rgb_images)
+        self.reg = pygicp.FastGICP()
         self.reg.set_max_correspondence_distance(self.max_correspondence_distance)
         self.reg.set_max_knn_distance(self.knn_max_distance)
         if_mapping_keyframe = False

@@ -18,6 +18,8 @@ from gaussian_renderer import render, render_3, network_gui
 from tqdm import tqdm
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 import open3d as o3d
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless environment
 import matplotlib.pyplot as plt
 
 class Pipe():
@@ -145,6 +147,7 @@ class Mapper(SLAMParameters):
         while not self.is_tracking_keyframe_shared[0]:
             time.sleep(1e-15)
 
+        self.total_start_time = time.time()
         self.total_start_time_viewer = time.time()
 
         points, colors, rots, scales, opacities, z_values, current_pose, tracking_mask, zero_filter, opacity_mask = self.shared_new_gaussians.get_values()
@@ -227,7 +230,7 @@ class Mapper(SLAMParameters):
                 self.target_gaussians_ready[0] = 1
 
                 gaussian_num = self.gaussians.get_xyz.shape[0]
-                print('gaussian_num:{}'.format(gaussian_num))
+                # print('gaussian_num:{}'.format(gaussian_num))  # Commented to avoid breaking tqdm display
                 self.is_tracking_keyframe_shared[0] = 0
 
             elif self.is_mapping_keyframe_shared[0]:
@@ -247,7 +250,7 @@ class Mapper(SLAMParameters):
                 self.get_loss(viewpoint_cam, render_pkg, new_keyframe=False)
 
                 gaussian_num = self.gaussians.get_xyz.shape[0]
-                print('gaussian_num:{}'.format(gaussian_num))
+                # print('gaussian_num:{}'.format(gaussian_num))  # Commented to avoid breaking tqdm display
                 self.is_mapping_keyframe_shared[0] = 0
 
             if len(self.mapping_cams)>0:
@@ -305,7 +308,14 @@ class Mapper(SLAMParameters):
 
         # End of data
         if self.save_results and not self.rerun_viewer:
-            self.gaussians.save_ply(os.path.join(self.output_path, "scene.ply"))
+            try:
+                self.gaussians.save_ply(os.path.join(self.output_path, "scene.ply"))
+            except OSError as e:
+                print(f"Warning: Could not save PLY file: {e}")
+                print("Continuing without saving PLY...")
+            
+            # Calculate and save parameters
+            self.calculate_and_save_parameters()
 
         self.calc_2d_metric()
 
@@ -394,7 +404,8 @@ class Mapper(SLAMParameters):
         fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 
         with torch.no_grad():
-            for i in tqdm(range(len(image_names))):
+            gaussian_num = self.gaussians.get_xyz.shape[0]
+            for i in tqdm(range(len(image_names)), desc=f"Eval 2D metrics (Gaussians: {gaussian_num})", ncols=100):
                 cam = self.mapping_cams[0]
                 c2w = final_poses[i]
 
@@ -446,8 +457,9 @@ class Mapper(SLAMParameters):
                 lpips += [lpips_value.detach().cpu()]
 
                 image_render = np.clip(np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1, 2, 0)) * 255, 0, 255).astype(np.uint8)
-                cv2.imshow('render_result', image_render[..., ::-1])
-                cv2.waitKey(1)
+                # Disable live display in headless environment
+                # cv2.imshow('render_result', image_render[..., ::-1])
+                # cv2.waitKey(1)
 
                 if self.save_results and ((i + 1) % 10 == 0 or i == len(image_names) - 1):
                     if not os.path.exists(f"{self.output_path}/render"):
@@ -464,7 +476,7 @@ class Mapper(SLAMParameters):
                     axs[1].imshow(ours_rgb)
                     axs[1].axis("off")
                     plt.suptitle(f'{i+1} frame')
-                    plt.pause(1e-15)
+                    # plt.pause(1e-15)  # Disabled for non-interactive backend
                     plt.savefig(f"{self.output_path}/result_{i}.png")
                     plt.cla()
 
@@ -475,6 +487,128 @@ class Mapper(SLAMParameters):
             lpips = np.array(lpips)
 
             print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
+            
+            # Save metrics to file
+            if self.save_results:
+                metrics = {
+                    'PSNR': float(psnrs.mean()),
+                    'SSIM': float(ssims.mean()),
+                    'LPIPS': float(lpips.mean()),
+                    'PSNR_std': float(psnrs.std()),
+                    'SSIM_std': float(ssims.std()),
+                    'LPIPS_std': float(lpips.std())
+                }
+                self.metrics_2d = metrics
+
+    def calculate_and_save_parameters(self):
+        """Calculate and save all system parameters to a JSON file"""
+        import json
+        
+        params = {}
+        
+        # 1. System FPS
+        params['system_fps'] = 1.0 / ((time.time() - self.total_start_time) / max(len(self.mapping_cams), 1))
+        
+        # 2. Training iterations
+        params['train_iterations'] = int(self.iter_shared[0].item())
+        
+        # 3. Number of keyframes
+        params['num_keyframes'] = len(self.mapping_cams)
+        
+        # 4. Number of gaussians
+        params['num_gaussians'] = self.gaussians.get_xyz.shape[0]
+        
+        # 5. ATE RMSE (from final_pose)
+        if hasattr(self, 'final_pose') and self.final_pose is not None:
+            final_poses_np = self.final_pose.detach().cpu().numpy()
+            # Calculate ATE if we have ground truth
+            try:
+                gt_poses = self.trajmanager.gt_poses[:len(final_poses_np)]
+                # Simple ATE calculation
+                gt_pts = np.array([gt_poses[i][:3, 3] for i in range(len(gt_poses))])
+                est_pts = np.array([final_poses_np[i][:3, 3] for i in range(len(final_poses_np))])
+                # Align trajectories (simple version - just center them)
+                gt_center = np.mean(gt_pts, axis=0)
+                est_center = np.mean(est_pts, axis=0)
+                gt_aligned = gt_pts - gt_center
+                est_aligned = est_pts - est_center
+                # Calculate RMSE
+                trans_error = np.linalg.norm(gt_aligned - est_aligned, axis=1)
+                ate_rmse = np.mean(trans_error) * 100.0  # Convert to cm
+                params['ate_rmse'] = float(ate_rmse)
+            except Exception as e:
+                print(f"Could not calculate ATE: {e}")
+                params['ate_rmse'] = None
+        
+        # 6. 2D metrics (PSNR, SSIM, LPIPS)
+        if hasattr(self, 'metrics_2d'):
+            params.update(self.metrics_2d)
+        
+        # 7. Gaussian parameters statistics
+        with torch.no_grad():
+            xyz = self.gaussians.get_xyz
+            opacity = self.gaussians.get_opacity
+            scaling = self.gaussians.get_scaling
+            
+            params['gaussian_extent'] = {
+                'min': float(torch.min(xyz).cpu()),
+                'max': float(torch.max(xyz).cpu()),
+                'mean': float(torch.mean(xyz).cpu()),
+                'std': float(torch.std(xyz).cpu())
+            }
+            params['opacity_stats'] = {
+                'min': float(torch.min(opacity).cpu()),
+                'max': float(torch.max(opacity).cpu()),
+                'mean': float(torch.mean(opacity).cpu())
+            }
+            params['scaling_stats'] = {
+                'min': float(torch.min(scaling).cpu()),
+                'max': float(torch.max(scaling).cpu()),
+                'mean': float(torch.mean(scaling).cpu())
+            }
+        
+        # 8. Camera parameters
+        params['camera'] = {
+            'width': int(self.W),
+            'height': int(self.H),
+            'fx': float(self.fx),
+            'fy': float(self.fy),
+            'cx': float(self.cx),
+            'cy': float(self.cy)
+        }
+        
+        # 9. SLAM parameters
+        params['slam_params'] = {
+            'keyframe_th': float(self.keyframe_th),
+            'trackable_opacity_th': float(self.trackable_opacity_th),
+            'downsample_rate_tracking': int(self.downsample_rate_tracking),
+            'downsample_rate_mapping': int(self.downsample_rate_mapping)
+        }
+        
+        # Save to JSON file
+        try:
+            params_file = os.path.join(self.output_path, "parameters.json")
+            with open(params_file, 'w') as f:
+                json.dump(params, f, indent=2)
+            print(f"Parameters saved to {params_file}")
+            
+            # Also print summary
+            print("\n" + "="*50)
+            print("SYSTEM PARAMETERS SUMMARY")
+            print("="*50)
+            print(f"System FPS: {params['system_fps']:.2f}")
+            print(f"Train Iterations: {params['train_iterations']}")
+            print(f"Keyframes: {params['num_keyframes']}")
+            print(f"Gaussians: {params['num_gaussians']}")
+            if params.get('ate_rmse') is not None:
+                print(f"ATE RMSE: {params['ate_rmse']:.2f} cm")
+            if 'PSNR' in params:
+                print(f"PSNR: {params['PSNR']:.2f} ± {params.get('PSNR_std', 0):.2f}")
+                print(f"SSIM: {params['SSIM']:.3f} ± {params.get('SSIM_std', 0):.3f}")
+                print(f"LPIPS: {params['LPIPS']:.3f} ± {params.get('LPIPS_std', 0):.3f}")
+            print("="*50)
+        except Exception as e:
+            print(f"Warning: Could not save parameters: {e}")
 
     def check_silhouette(self, viewpoint_cam):
         # with torch.no_grad():

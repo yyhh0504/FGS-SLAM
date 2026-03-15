@@ -93,7 +93,7 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, sc
         shs = shs[indice]
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    depth_image, rendered_image, radii, is_used = rasterizer(
+    raster_out = rasterizer(
         means3D=means3D,
         means2D=means2D,
         shs=shs,
@@ -102,6 +102,17 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, sc
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp)
+    
+    # Handle different return formats from diff-gaussian-rasterization
+    if len(raster_out) == 4:
+        depth_image, rendered_image, radii, is_used = raster_out
+    elif len(raster_out) == 2:
+        rendered_image, radii = raster_out
+        # Create dummy depth_image and is_used
+        depth_image = torch.zeros((int(viewpoint_camera.image_height), int(viewpoint_camera.image_width)), device="cuda")
+        is_used = torch.ones(means3D.shape[0], dtype=torch.bool, device="cuda")
+    else:
+        raise ValueError(f"Unexpected rasterizer return format with {len(raster_out)} values")
 
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
@@ -193,7 +204,7 @@ def render_2(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
 
     # print(means3D)
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    depth_image, rendered_image, radii, is_used = rasterizer(
+    raster_out = rasterizer(
         means3D=means3D,
         means2D=means2D,
         shs=shs,
@@ -202,6 +213,17 @@ def render_2(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp)
+    
+    # Handle different return formats from diff-gaussian-rasterization
+    if len(raster_out) == 4:
+        depth_image, rendered_image, radii, is_used = raster_out
+    elif len(raster_out) == 2:
+        rendered_image, radii = raster_out
+        # Create dummy depth_image and is_used
+        depth_image = torch.zeros((resolution_height, resolution_width), device="cuda")
+        is_used = torch.ones(means3D.shape[0], dtype=torch.bool, device="cuda")
+    else:
+        raise ValueError(f"Unexpected rasterizer return format with {len(raster_out)} values")
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -297,7 +319,7 @@ def render_3(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
     # print(means3D)
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     if depth_sil_rendervar is None:
-        depth_image, rendered_image, radii, is_used = rasterizer(
+        raster_out = rasterizer(
             means3D=means3D,
             means2D=means2D,
             shs=shs,
@@ -307,7 +329,7 @@ def render_3(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
             rotations=rotations,
             cov3D_precomp=cov3D_precomp)
     else:
-        depth_image, rendered_image, radii, is_used = rasterizer(
+        raster_out = rasterizer(
             means3D=depth_sil_rendervar['means3D'],
             means2D=depth_sil_rendervar['means2D'],
             shs=None,
@@ -316,6 +338,17 @@ def render_3(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, 
             scales=depth_sil_rendervar['scales'],
             rotations=depth_sil_rendervar['rotations'],
             cov3D_precomp=cov3D_precomp)
+    
+    # Handle different return formats from diff-gaussian-rasterization
+    if len(raster_out) == 4:
+        depth_image, rendered_image, radii, is_used = raster_out
+    elif len(raster_out) == 2:
+        rendered_image, radii = raster_out
+        # Create dummy depth_image and is_used
+        depth_image = torch.zeros((resolution_height, resolution_width), device="cuda")
+        is_used = torch.ones(means3D.shape[0], dtype=torch.bool, device="cuda")
+    else:
+        raise ValueError(f"Unexpected rasterizer return format with {len(raster_out)} values")
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
